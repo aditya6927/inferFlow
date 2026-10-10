@@ -13,6 +13,18 @@ constexpr double DECODE_TIME_PER_REQUEST = 0.2;
 }
 
 void Simulator::addRequest(const Request& request) {
+    if (request.maxOutputTokens <= 0) {
+        throw std::invalid_argument(
+            "Request must have positive maxOutputTokens"
+        );
+    }
+
+    if (request.promptTokens <= 0) {
+        throw std::invalid_argument(
+            "Request must have positive promptTokens"
+        );
+    }
+
     requests_.push_back(request);
 
     events_.push({
@@ -28,7 +40,9 @@ void Simulator::run() {
         events_.pop();
 
         if (event.time < currentTime_) {
-            throw std::runtime_error("Event time moved backwards");
+            throw std::runtime_error(
+                "Event time moved backwards"
+            );
         }
 
         currentTime_ = event.time;
@@ -54,25 +68,26 @@ void Simulator::processEvent(const Event& event) {
 }
 
 void Simulator::handleArrival(uint64_t requestId) {
-    std::cout
-        << "["
-        << currentTime_
-        << " ms] Request "
-        << requestId
-        << " arrived\n";
-
     waitingQueue_.push(requestId);
+    tryAdmitWaitingRequests();
+}
 
+void Simulator::tryAdmitWaitingRequests() {
     while (!waitingQueue_.empty()) {
-        uint64_t nextRequestId = waitingQueue_.front();
+        const uint64_t requestId = waitingQueue_.front();
+        Request& request = getRequest(requestId);
 
-        if (!kvCache_.canAllocate(
-                getRequest(nextRequestId).promptTokens)) {
+        // Reserve the entire maximum KV footprint.
+        const std::size_t requiredTokens =
+            static_cast<std::size_t>(request.promptTokens) +
+            static_cast<std::size_t>(request.maxOutputTokens);
+
+        if (!kvCache_.canAllocate(requiredTokens)) {
             break;
         }
 
         waitingQueue_.pop();
-        admitRequest(nextRequestId);
+        admitRequest(requestId);
     }
 }
 
@@ -83,28 +98,22 @@ void Simulator::admitRequest(uint64_t requestId) {
         return;
     }
 
-    if (!kvCache_.canAllocate(request.promptTokens)) {
-        std::cout
-            << "["
-            << currentTime_
-            << " ms] Request "
-            << requestId
-            << " waiting for KV cache\n";
+    const std::size_t requiredTokens =
+        static_cast<std::size_t>(request.promptTokens) +
+        static_cast<std::size_t>(request.maxOutputTokens);
 
-        return;
+    if (!kvCache_.allocate(request.id, requiredTokens)) {
+        throw std::runtime_error(
+            "KV allocation failed after capacity check"
+        );
     }
-
-    kvCache_.allocate(
-        request.id,
-        request.promptTokens
-    );
 
     request.state = RequestState::Prefilling;
     request.admissionTime = currentTime_;
 
     activeRequests_.push_back(requestId);
 
-    double prefillDuration =
+    const double prefillDuration =
         request.promptTokens * PREFILL_TIME_PER_TOKEN;
 
     events_.push({
@@ -112,57 +121,45 @@ void Simulator::admitRequest(uint64_t requestId) {
         requestId,
         Event::Type::PrefillComplete
     });
-
-    std::cout
-        << "["
-        << currentTime_
-        << " ms] Request "
-        << requestId
-        << " started prefill\n";
 }
 
 void Simulator::handlePrefillComplete(uint64_t requestId) {
     Request& request = getRequest(requestId);
 
+    if (request.state != RequestState::Prefilling) {
+        return;
+    }
+
     request.state = RequestState::Decoding;
 
-    std::cout
-        << "["
-        << currentTime_
-        << " ms] Request "
-        << requestId
-        << " finished prefill\n";
-
-    /*
-     * If this is the first request ready to decode,
-     * start the decode iterations.
-     */
-    if (request.generatedTokens == 0) {
+    // There is exactly one global decode loop.
+    if (!decodeScheduled_) {
         events_.push({
             currentTime_,
-            request.id,
+            0,
             Event::Type::DecodeIteration
         });
+
+        decodeScheduled_ = true;
     }
 }
 
 void Simulator::handleDecodeIteration() {
-    bool hasDecodingRequest = false;
+    decodeScheduled_ = false;
 
-    /*
-     * One iteration represents one forward pass over
-     * the currently active decoding batch.
-     *
-     * This is intentionally a simple synthetic model:
-     *
-     * iteration time =
-     *     base cost + cost per active request
-     *
-     * It is NOT a calibrated hardware model.
-     */
+    const std::size_t activeCount =
+        activeRequests_.size();
+
+    if (activeCount == 0) {
+        tryAdmitWaitingRequests();
+        return;
+    }
+
     const double iterationDuration =
         BASE_DECODE_TIME +
-        DECODE_TIME_PER_REQUEST * activeRequests_.size();
+        DECODE_TIME_PER_REQUEST * activeCount;
+
+    bool hasDecodingRequest = false;
 
     for (uint64_t requestId : activeRequests_) {
         Request& request = getRequest(requestId);
@@ -173,69 +170,24 @@ void Simulator::handleDecodeIteration() {
 
         hasDecodingRequest = true;
 
-        const std::size_t newTokenCount =
-            request.promptTokens +
-            request.generatedTokens +
-            1;
-
-        if (!kvCache_.grow(request.id, newTokenCount)) {
-            std::cout
-                << "["
-                << currentTime_
-                << " ms] Request "
-                << request.id
-                << " stalled: KV cache full\n";
-
-            continue;
-        }
-
-        if (request.generatedTokens == 0) {
-            request.firstTokenTime = currentTime_;
-
-            std::cout
-                << "["
-                << currentTime_
-                << " ms] Request "
-                << request.id
-                << " generated first token\n";
-        }
-
         request.generatedTokens++;
 
+        // The token becomes available at the end of this decode step.
+        const double tokenTime =
+            currentTime_ + iterationDuration;
+
+        if (request.generatedTokens == 1) {
+            request.firstTokenTime = tokenTime;
+        }
+
         if (request.isComplete()) {
-            kvCache_.release(request.id);
             request.state = RequestState::Completed;
-            request.completionTime = currentTime_;
+            request.completionTime = tokenTime;
 
-            std::cout
-                << "["
-                << currentTime_
-                << " ms] Request "
-                << request.id
-                << " completed\n";
+            kvCache_.release(request.id);
         }
     }
 
-    if (!hasDecodingRequest) {
-        return;
-    }
-
-    while (!waitingQueue_.empty()) {
-        uint64_t requestId = waitingQueue_.front();
-
-        Request& request = getRequest(requestId);
-
-        if (!kvCache_.canAllocate(request.promptTokens)) {
-            break;
-        }
-
-        waitingQueue_.pop();
-        admitRequest(requestId);
-    }
-
-    /*
-     * Remove completed requests from the active batch.
-     */
     activeRequests_.erase(
         std::remove_if(
             activeRequests_.begin(),
@@ -248,15 +200,17 @@ void Simulator::handleDecodeIteration() {
         activeRequests_.end()
     );
 
-    /*
-     * Schedule the next iteration if requests remain.
-     */
-    if (!activeRequests_.empty()) {
+    // Newly freed KV space can admit waiting requests.
+    tryAdmitWaitingRequests();
+
+    if (hasDecodingRequest && !activeRequests_.empty()) {
         events_.push({
             currentTime_ + iterationDuration,
             0,
             Event::Type::DecodeIteration
         });
+
+        decodeScheduled_ = true;
     }
 }
 

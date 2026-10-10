@@ -30,8 +30,7 @@ int main() {
 
     simulator.run();
 
-    std::cout << "\n";
-    std::cout << "Request Metrics\n";
+    std::cout << "\nRequest Metrics\n";
     std::cout << "===============\n";
 
     std::cout
@@ -42,15 +41,19 @@ int main() {
         << std::setw(15) << "E2E(ms)"
         << '\n';
 
-    std::cout << "-----------------------------------------------\n";
+    std::cout
+        << "-----------------------------------------------\n";
 
     for (const Request& request : simulator.requests()) {
-        RequestMetrics metrics = calculateMetrics(request);
+        RequestMetrics metrics =
+            calculateMetrics(request);
 
         std::cout
             << std::left
             << std::setw(10) << request.id
-            << std::setw(15) << std::fixed << std::setprecision(2)
+            << std::setw(15)
+            << std::fixed
+            << std::setprecision(2)
             << metrics.queueLatency
             << std::setw(15)
             << metrics.ttft
@@ -65,22 +68,33 @@ int main() {
     std::cout << "\nAggregate Metrics\n";
     std::cout << "=================\n";
 
-    std::cout << "Average Queue Latency: "
-              << aggregate.averageQueueLatency << " ms\n";
+    std::cout
+        << "Average Queue Latency: "
+        << aggregate.averageQueueLatency
+        << " ms\n";
 
-    std::cout << "Average TTFT: "
-              << aggregate.averageTTFT << " ms\n";
+    std::cout
+        << "Average TTFT: "
+        << aggregate.averageTTFT
+        << " ms\n";
 
-    std::cout << "P50 TTFT: "
-              << aggregate.p50TTFT << " ms\n";
+    std::cout
+        << "P50 TTFT: "
+        << aggregate.p50TTFT
+        << " ms\n";
 
-    std::cout << "P95 TTFT: "
-              << aggregate.p95TTFT << " ms\n";
+    std::cout
+        << "P95 TTFT: "
+        << aggregate.p95TTFT
+        << " ms\n";
 
-    std::cout << "Average E2E Latency: "
-              << aggregate.averageE2ELatency << " ms\n";
+    std::cout
+        << "Average E2E Latency: "
+        << aggregate.averageE2ELatency
+        << " ms\n";
 
-    std::cout << "Throughput: "
-              << long(aggregate.throughput * 1000.0)
-              << " requests/s\n";
+    std::cout
+        << "Throughput: "
+        << long(aggregate.throughput * 1000.0)
+        << " requests/s\n";
 }

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(infsim
+project(inferFlow
     VERSION 0.1
     LANGUAGES CXX
 )
@@ -9,13 +9,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_executable(infsim
+add_executable(inferFlow
     src/main.cpp
     src/simulator.cpp
     src/metrics.cpp
+    src/kv_cache.cpp
 )
 
-target_include_directories(infsim
+target_include_directories(inferFlow
     PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
+        include
 )
