@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <queue>
+#include <unordered_map>
 #include <vector>
 
 class Simulator {
@@ -21,6 +22,7 @@ private:
         enum class Type {
             Arrival,
             PrefillComplete,
+            DecodeComplete,
             DecodeIteration
         };
 
@@ -48,6 +50,7 @@ private:
     void handleArrival(uint64_t requestId);
     void handlePrefillComplete(uint64_t requestId);
     void handleDecodeIteration();
+    void handleDecodeComplete();
 
     void tryAdmitWaitingRequests();
     void admitRequest(uint64_t requestId);
@@ -58,6 +61,7 @@ private:
     std::priority_queue<Event> events_;
 
     std::vector<Request> requests_;
+    std::unordered_map<uint64_t, std::size_t> requestIndex_;
     std::vector<uint64_t> activeRequests_;
     std::queue<uint64_t> waitingQueue_;
 
@@ -65,5 +69,6 @@ private:
 
     double currentTime_ = 0.0;
 
+    // True while a decode iteration is scheduled or in flight.
     bool decodeScheduled_ = false;
 };

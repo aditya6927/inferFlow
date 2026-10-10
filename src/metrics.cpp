@@ -1,7 +1,7 @@
 #include "metrics.hpp"
 
 #include <algorithm>
-#include <numeric>
+#include <cmath>
 
 RequestMetrics calculateMetrics(const Request& request) {
     return {
@@ -19,10 +19,6 @@ RequestMetrics calculateMetrics(const Request& request) {
 AggregateMetrics calculateAggregateMetrics(
     const std::vector<Request>& requests
 ) {
-    if (requests.empty()) {
-        return {};
-    }
-
     std::vector<double> ttfts;
     ttfts.reserve(requests.size());
 
@@ -30,10 +26,15 @@ AggregateMetrics calculateAggregateMetrics(
     double totalTTFT = 0.0;
     double totalE2E = 0.0;
 
-    double startTime = requests.front().arrivalTime;
-    double endTime = requests.front().completionTime;
+    double startTime = 0.0;
+    double endTime = 0.0;
 
     for (const Request& request : requests) {
+        // Requests that never completed have no valid timestamps.
+        if (request.state != RequestState::Completed) {
+            continue;
+        }
+
         RequestMetrics metrics = calculateMetrics(request);
 
         totalQueue += metrics.queueLatency;
@@ -42,30 +43,45 @@ AggregateMetrics calculateAggregateMetrics(
 
         ttfts.push_back(metrics.ttft);
 
-        startTime = std::min(startTime, request.arrivalTime);
-        endTime = std::max(endTime, request.completionTime);
+        if (ttfts.size() == 1) {
+            startTime = request.arrivalTime;
+            endTime = request.completionTime;
+        } else {
+            startTime = std::min(startTime, request.arrivalTime);
+            endTime = std::max(endTime, request.completionTime);
+        }
+    }
+
+    const std::size_t completed = ttfts.size();
+
+    if (completed == 0) {
+        return {};
     }
 
     std::sort(ttfts.begin(), ttfts.end());
 
+    // Nearest-rank percentile.
     auto percentile = [&](double p) {
-        std::size_t index =
-            static_cast<std::size_t>(
-                p * (ttfts.size() - 1)
-            );
+        std::size_t rank = static_cast<std::size_t>(
+            std::ceil(p * static_cast<double>(completed))
+        );
 
-        return ttfts[index];
+        rank = std::clamp<std::size_t>(rank, 1, completed);
+
+        return ttfts[rank - 1];
     };
+
+    const double span = endTime - startTime;
 
     return {
         .averageQueueLatency =
-            totalQueue / requests.size(),
+            totalQueue / completed,
 
         .averageTTFT =
-            totalTTFT / requests.size(),
+            totalTTFT / completed,
 
         .averageE2ELatency =
-            totalE2E / requests.size(),
+            totalE2E / completed,
 
         .p50TTFT =
             percentile(0.50),
@@ -74,6 +90,6 @@ AggregateMetrics calculateAggregateMetrics(
             percentile(0.95),
 
         .throughput =
-            requests.size() / (endTime - startTime)
+            span > 0.0 ? completed / span : 0.0
     };
 }

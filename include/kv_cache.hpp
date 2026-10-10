@@ -21,6 +21,11 @@ public:
     std::size_t freeBlocks() const;
     std::size_t allocatedBlocks(uint64_t requestId) const;
 
+    // Total token capacity of the cache (a request larger than this can never run).
+    std::size_t capacityTokens() const {
+        return totalBlocks_ * blockSize_;
+    }
+
 private:
     std::size_t totalBlocks_;
     std::size_t blockSize_;

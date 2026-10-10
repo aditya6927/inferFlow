@@ -1,7 +1,6 @@
 #include "simulator.hpp"
 
 #include <algorithm>
-#include <iostream>
 #include <stdexcept>
 
 namespace {
@@ -25,6 +24,23 @@ void Simulator::addRequest(const Request& request) {
         );
     }
 
+    if (requestIndex_.contains(request.id)) {
+        throw std::invalid_argument("Duplicate request ID");
+    }
+
+    // A request that can never fit in the KV cache would block the
+    // FIFO queue forever, so reject it up front.
+    const std::size_t totalTokens =
+        static_cast<std::size_t>(request.promptTokens) +
+        static_cast<std::size_t>(request.maxOutputTokens);
+
+    if (totalTokens > kvCache_.capacityTokens()) {
+        throw std::invalid_argument(
+            "Request exceeds total KV cache capacity"
+        );
+    }
+
+    requestIndex_[request.id] = requests_.size();
     requests_.push_back(request);
 
     events_.push({
@@ -63,6 +79,10 @@ void Simulator::processEvent(const Event& event) {
 
         case Event::Type::DecodeIteration:
             handleDecodeIteration();
+            break;
+
+        case Event::Type::DecodeComplete:
+            handleDecodeComplete();
             break;
     }
 }
@@ -144,22 +164,30 @@ void Simulator::handlePrefillComplete(uint64_t requestId) {
     }
 }
 
+// Start of a decode iteration: every decoding request produces one token.
+// The iteration takes time, so the tokens become available at its end, and
+// KV blocks are only freed (and waiting requests admitted) at that moment,
+// in handleDecodeComplete().
 void Simulator::handleDecodeIteration() {
-    decodeScheduled_ = false;
+    // Only requests that are actually decoding take part in this step.
+    std::size_t decodingCount = 0;
 
-    const std::size_t activeCount =
-        activeRequests_.size();
+    for (uint64_t requestId : activeRequests_) {
+        if (getRequest(requestId).state == RequestState::Decoding) {
+            ++decodingCount;
+        }
+    }
 
-    if (activeCount == 0) {
-        tryAdmitWaitingRequests();
+    if (decodingCount == 0) {
+        decodeScheduled_ = false;
         return;
     }
 
     const double iterationDuration =
         BASE_DECODE_TIME +
-        DECODE_TIME_PER_REQUEST * activeCount;
+        DECODE_TIME_PER_REQUEST * decodingCount;
 
-    bool hasDecodingRequest = false;
+    const double iterationEnd = currentTime_ + iterationDuration;
 
     for (uint64_t requestId : activeRequests_) {
         Request& request = getRequest(requestId);
@@ -168,23 +196,32 @@ void Simulator::handleDecodeIteration() {
             continue;
         }
 
-        hasDecodingRequest = true;
-
         request.generatedTokens++;
 
-        // The token becomes available at the end of this decode step.
-        const double tokenTime =
-            currentTime_ + iterationDuration;
-
         if (request.generatedTokens == 1) {
-            request.firstTokenTime = tokenTime;
+            request.firstTokenTime = iterationEnd;
         }
 
         if (request.isComplete()) {
             request.state = RequestState::Completed;
-            request.completionTime = tokenTime;
+            request.completionTime = iterationEnd;
+        }
+    }
 
-            kvCache_.release(request.id);
+    // decodeScheduled_ stays true: one iteration in flight at a time.
+    events_.push({
+        iterationEnd,
+        0,
+        Event::Type::DecodeComplete
+    });
+}
+
+// End of a decode iteration: free finished requests, admit waiting ones,
+// and start the next iteration if anything is still decoding.
+void Simulator::handleDecodeComplete() {
+    for (uint64_t requestId : activeRequests_) {
+        if (getRequest(requestId).state == RequestState::Completed) {
+            kvCache_.release(requestId);
         }
     }
 
@@ -200,12 +237,22 @@ void Simulator::handleDecodeIteration() {
         activeRequests_.end()
     );
 
-    // Newly freed KV space can admit waiting requests.
     tryAdmitWaitingRequests();
 
-    if (hasDecodingRequest && !activeRequests_.empty()) {
+    decodeScheduled_ = false;
+
+    const bool anyDecoding = std::any_of(
+        activeRequests_.begin(),
+        activeRequests_.end(),
+        [this](uint64_t requestId) {
+            return getRequest(requestId).state ==
+                   RequestState::Decoding;
+        }
+    );
+
+    if (anyDecoding) {
         events_.push({
-            currentTime_ + iterationDuration,
+            currentTime_,
             0,
             Event::Type::DecodeIteration
         });
@@ -215,13 +262,13 @@ void Simulator::handleDecodeIteration() {
 }
 
 Request& Simulator::getRequest(uint64_t requestId) {
-    for (Request& request : requests_) {
-        if (request.id == requestId) {
-            return request;
-        }
+    auto it = requestIndex_.find(requestId);
+
+    if (it == requestIndex_.end()) {
+        throw std::runtime_error("Unknown request ID");
     }
 
-    throw std::runtime_error("Unknown request ID");
+    return requests_[it->second];
 }
 
 bool Simulator::isActive(uint64_t requestId) const {
