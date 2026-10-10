@@ -1,6 +1,7 @@
 #pragma once
 
 #include "request.hpp"
+#include "kv_cache.hpp"
 
 #include <functional>
 #include <queue>
@@ -44,6 +45,8 @@ private:
     > events_;
 
     std::vector<uint64_t> activeRequests_;
+    KVCache kvCache_{64, 16};
+    std::queue<uint64_t> waitingQueue_;
 
     void processEvent(const Event& event);
 

@@ -61,7 +61,19 @@ void Simulator::handleArrival(uint64_t requestId) {
         << requestId
         << " arrived\n";
 
-    admitRequest(requestId);
+    waitingQueue_.push(requestId);
+
+    while (!waitingQueue_.empty()) {
+        uint64_t nextRequestId = waitingQueue_.front();
+
+        if (!kvCache_.canAllocate(
+                getRequest(nextRequestId).promptTokens)) {
+            break;
+        }
+
+        waitingQueue_.pop();
+        admitRequest(nextRequestId);
+    }
 }
 
 void Simulator::admitRequest(uint64_t requestId) {
@@ -70,6 +82,22 @@ void Simulator::admitRequest(uint64_t requestId) {
     if (request.state != RequestState::Waiting) {
         return;
     }
+
+    if (!kvCache_.canAllocate(request.promptTokens)) {
+        std::cout
+            << "["
+            << currentTime_
+            << " ms] Request "
+            << requestId
+            << " waiting for KV cache\n";
+
+        return;
+    }
+
+    kvCache_.allocate(
+        request.id,
+        request.promptTokens
+    );
 
     request.state = RequestState::Prefilling;
     request.admissionTime = currentTime_;
@@ -145,6 +173,22 @@ void Simulator::handleDecodeIteration() {
 
         hasDecodingRequest = true;
 
+        const std::size_t newTokenCount =
+            request.promptTokens +
+            request.generatedTokens +
+            1;
+
+        if (!kvCache_.grow(request.id, newTokenCount)) {
+            std::cout
+                << "["
+                << currentTime_
+                << " ms] Request "
+                << request.id
+                << " stalled: KV cache full\n";
+
+            continue;
+        }
+
         if (request.generatedTokens == 0) {
             request.firstTokenTime = currentTime_;
 
@@ -159,6 +203,7 @@ void Simulator::handleDecodeIteration() {
         request.generatedTokens++;
 
         if (request.isComplete()) {
+            kvCache_.release(request.id);
             request.state = RequestState::Completed;
             request.completionTime = currentTime_;
 
@@ -173,6 +218,19 @@ void Simulator::handleDecodeIteration() {
 
     if (!hasDecodingRequest) {
         return;
+    }
+
+    while (!waitingQueue_.empty()) {
+        uint64_t requestId = waitingQueue_.front();
+
+        Request& request = getRequest(requestId);
+
+        if (!kvCache_.canAllocate(request.promptTokens)) {
+            break;
+        }
+
+        waitingQueue_.pop();
+        admitRequest(requestId);
     }
 
     /*

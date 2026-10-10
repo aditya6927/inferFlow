@@ -1,0 +1,31 @@
+# Build artifacts
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Executables
+*.exe
+*.out
+*.app
+main
+infsim
+inflow
+
+# Object files
+*.o
+*.obj
+*.a
+*.lib
+
+# IDE/editor files
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln
+*.vcxproj*

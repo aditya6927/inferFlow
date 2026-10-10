@@ -10,22 +10,22 @@ int main() {
     simulator.addRequest({
         .id = 1,
         .arrivalTime = 10.0,
-        .promptTokens = 512,
-        .maxOutputTokens = 128
+        .promptTokens = 500,
+        .maxOutputTokens = 100
     });
 
     simulator.addRequest({
         .id = 2,
         .arrivalTime = 3.0,
-        .promptTokens = 1024,
-        .maxOutputTokens = 256
+        .promptTokens = 400,
+        .maxOutputTokens = 100
     });
 
     simulator.addRequest({
         .id = 3,
         .arrivalTime = 7.0,
-        .promptTokens = 256,
-        .maxOutputTokens = 64
+        .promptTokens = 300,
+        .maxOutputTokens = 100
     });
 
     simulator.run();
@@ -58,4 +58,29 @@ int main() {
             << metrics.e2eLatency
             << '\n';
     }
+
+    AggregateMetrics aggregate =
+        calculateAggregateMetrics(simulator.requests());
+
+    std::cout << "\nAggregate Metrics\n";
+    std::cout << "=================\n";
+
+    std::cout << "Average Queue Latency: "
+              << aggregate.averageQueueLatency << " ms\n";
+
+    std::cout << "Average TTFT: "
+              << aggregate.averageTTFT << " ms\n";
+
+    std::cout << "P50 TTFT: "
+              << aggregate.p50TTFT << " ms\n";
+
+    std::cout << "P95 TTFT: "
+              << aggregate.p95TTFT << " ms\n";
+
+    std::cout << "Average E2E Latency: "
+              << aggregate.averageE2ELatency << " ms\n";
+
+    std::cout << "Throughput: "
+              << long(aggregate.throughput * 1000.0)
+              << " requests/s\n";
 }
